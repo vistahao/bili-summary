@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# User-specific configuration and secrets
+config.ini
+.env
+
+# Runtime state belongs outside the source repository
+.cache/
+build/
+dist/

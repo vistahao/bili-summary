@@ -1,0 +1,16 @@
+[project]
+name = "bili-summary"
+version = "0.1.0"
+description = "Local CLI for turning Bilibili links and MP4 files into traceable study notes"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+bili-summary = "bili_summary.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
