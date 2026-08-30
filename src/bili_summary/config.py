@@ -15,6 +15,8 @@ class Settings:
     audit_level: str = "basic"
     transcriber_mode: str = "auto"
     cost_submission_limit_cny: float = 1.0
+    bilibili_cookie_file: Path | None = None
+    codex_model: str | None = None
 
 
 def load_settings(path: Path | None = None) -> Settings:
@@ -23,6 +25,8 @@ def load_settings(path: Path | None = None) -> Settings:
 
     parser = configparser.ConfigParser()
     parser.read(path, encoding="utf-8")
+    cookie_value = parser.get("bilibili", "cookie_file", fallback="").strip()
+    codex_model = parser.get("codex", "model", fallback="").strip()
     settings = Settings(
         data_root=Path(parser.get("storage", "data_root", fallback=str(Settings.data_root))).expanduser(),
         audit_level=parser.get("processing", "audit_level", fallback="basic").strip().lower(),
@@ -30,6 +34,8 @@ def load_settings(path: Path | None = None) -> Settings:
         cost_submission_limit_cny=parser.getfloat(
             "processing", "cost_submission_limit_cny", fallback=1.0
         ),
+        bilibili_cookie_file=Path(cookie_value).expanduser() if cookie_value else None,
+        codex_model=codex_model or None,
     )
     if settings.audit_level not in VALID_AUDIT_LEVELS:
         raise ValueError(f"无效的 audit_level：{settings.audit_level}")

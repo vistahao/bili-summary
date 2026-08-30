@@ -10,6 +10,7 @@ htmlcov/
 # User-specific configuration and secrets
 config.ini
 .env
+.secrets/
 
 # Runtime state belongs outside the source repository
 .cache/

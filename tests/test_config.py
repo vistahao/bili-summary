@@ -15,7 +15,11 @@ class ConfigTests(unittest.TestCase):
                 "[processing]\n"
                 "audit_level = deep\n"
                 "transcriber_mode = local\n"
-                "cost_submission_limit_cny = 0.5\n",
+                "cost_submission_limit_cny = 0.5\n"
+                "[bilibili]\n"
+                "cookie_file = ~/.secrets/bili-cookie.txt\n"
+                "[codex]\n"
+                "model = gpt-test\n",
                 encoding="utf-8",
             )
             settings = load_settings(config_path)
@@ -23,6 +27,11 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(settings.audit_level, "deep")
             self.assertEqual(settings.transcriber_mode, "local")
             self.assertEqual(settings.cost_submission_limit_cny, 0.5)
+            self.assertEqual(
+                settings.bilibili_cookie_file,
+                Path("~/.secrets/bili-cookie.txt").expanduser(),
+            )
+            self.assertEqual(settings.codex_model, "gpt-test")
 
 
 if __name__ == "__main__":

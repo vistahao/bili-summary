@@ -29,3 +29,25 @@ class TextResult:
     task: str
     content: str
     warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PlatformTranscript:
+    input_spec: InputSpec
+    video: dict[str, Any]
+    page: dict[str, Any]
+    subtitle: dict[str, Any]
+    raw_subtitle: dict[str, Any]
+    segments: tuple[TranscriptSegment, ...]
+
+
+@dataclass(frozen=True)
+class StudyOutputs:
+    clean_transcript_markdown: str
+    audit_markdown: str
+    summary_markdown: str
+    warnings: tuple[str, ...]
+    usage: dict[str, int]
+    call_count: int
+    elapsed_seconds: float
+    backend_metadata: dict[str, str]

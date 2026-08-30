@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "clean_transcript_markdown": {"type": "string", "minLength": 1},
+    "audit_markdown": {"type": "string", "minLength": 1},
+    "summary_markdown": {"type": "string", "minLength": 1},
+    "warnings": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "required": [
+    "clean_transcript_markdown",
+    "audit_markdown",
+    "summary_markdown",
+    "warnings"
+  ],
+  "additionalProperties": false
+}

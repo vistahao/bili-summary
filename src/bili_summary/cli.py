@@ -8,23 +8,36 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from . import __version__
+from .adapters import CodexError
+from .bilibili import BilibiliError
 from .config import Settings, load_settings
 from .inputs import InputError, parse_bilibili_input, parse_local_mp4
 from .models import InputSpec
 from .naming import build_archive_path
+from .pipeline import run_bilibili_pipeline
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bili-summary",
-        description="哔哩哔哩与本地 MP4 学习资料整理工具（阶段 1：离线预览）",
+        description="哔哩哔哩与本地 MP4 学习资料整理工具（阶段 2）",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--config", type=Path, help="非秘密 INI 配置文件路径")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    run_parser = subparsers.add_parser("run", help="预览哔哩哔哩链接任务")
+    run_parser = subparsers.add_parser("run", help="预览或执行哔哩哔哩链接任务")
     run_parser.add_argument("source", help="哔哩哔哩链接、b23.tv 短链接或 BV 号")
+    run_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="联网获取平台字幕、写入成果并调用只读临时 Codex；省略时只预览",
+    )
+    run_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="覆盖同名已完成文本成果并再次调用 Codex",
+    )
     _add_archive_arguments(run_parser)
 
     file_parser = subparsers.add_parser("run-file", help="预览单个本地 MP4 任务")
@@ -65,7 +78,7 @@ def _preview(spec: InputSpec, args: argparse.Namespace, settings: Settings) -> d
             "transcriber_mode": settings.transcriber_mode,
             "cost_submission_limit_cny": settings.cost_submission_limit_cny,
         },
-        "notice": "阶段 1 未下载、未转写、未调用 Codex，也未写入成果目录",
+        "notice": "预览模式未联网、未转写、未调用 Codex，也未写入成果目录",
     }
 
 
@@ -79,7 +92,8 @@ def _doctor() -> dict[str, Any]:
         "ffmpeg": shutil.which("ffmpeg"),
         "ffprobe": shutil.which("ffprobe"),
         "valid_git_worktree": (project_root / ".git" / "HEAD").exists(),
-        "stage": 1,
+        "bilibili_cookie_configured": False,
+        "stage": 2,
     }
 
 
@@ -87,17 +101,25 @@ def _print_result(result: dict[str, Any], as_json: bool) -> None:
     if as_json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
-    if result.get("stage") == 1 and "python" in result:
-        print("阶段 1 只读环境检查")
+    if result.get("stage") == 2 and "python" in result:
+        print("阶段 2 只读环境检查")
         for key, value in result.items():
             print(f"{key}: {value}")
         return
-    input_data = result["input"]
-    print("阶段 1 离线任务预览")
-    print(f"输入类型: {input_data['source_type']}")
-    print(f"规范输入: {input_data['canonical']}")
-    print(f"成果目录: {result['archive_path']}")
-    print(result["notice"])
+    if "input" in result:
+        input_data = result["input"]
+        print("离线任务预览")
+        print(f"输入类型: {input_data['source_type']}")
+        print(f"规范输入: {input_data['canonical']}")
+        print(f"成果目录: {result['archive_path']}")
+        print(result["notice"])
+        return
+    print(f"任务状态: {result['status']}")
+    print(f"成果目录: {result['output_dir']}")
+    if result.get("notice"):
+        print(result["notice"])
+    for file_name in result.get("files", []):
+        print(f"- {file_name}")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -106,14 +128,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         settings = load_settings(args.config)
         if args.command == "doctor":
-            _print_result(_doctor(), args.as_json)
+            doctor = _doctor()
+            doctor["bilibili_cookie_configured"] = bool(settings.bilibili_cookie_file)
+            if settings.bilibili_cookie_file:
+                doctor["bilibili_cookie_file_exists"] = settings.bilibili_cookie_file.is_file()
+            doctor["codex_model"] = settings.codex_model or "codex-cli-default"
+            _print_result(doctor, args.as_json)
             return 0
         if args.command == "run":
             spec = parse_bilibili_input(args.source)
+            if args.execute:
+                project_root = Path(__file__).resolve().parents[2]
+                result = run_bilibili_pipeline(
+                    spec,
+                    settings,
+                    subject=args.subject,
+                    course=args.course,
+                    title_override=args.title,
+                    schema_path=project_root / "schemas" / "study_outputs.schema.json",
+                    force=args.force,
+                )
+                _print_result(result, args.as_json)
+                return 0
         else:
             spec = parse_local_mp4(args.source, compute_hash=args.hash)
         _print_result(_preview(spec, args, settings), args.as_json)
         return 0
-    except (InputError, OSError, ValueError) as exc:
+    except (BilibiliError, CodexError, InputError, OSError, ValueError) as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 2
