@@ -51,3 +51,11 @@ class StudyOutputs:
     call_count: int
     elapsed_seconds: float
     backend_metadata: dict[str, str]
+
+
+@dataclass(frozen=True)
+class StructuredResult:
+    payload: dict[str, Any]
+    usage: dict[str, int]
+    elapsed_seconds: float
+    backend_metadata: dict[str, str]

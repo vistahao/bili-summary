@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Protocol, Sequence
 
-from .models import StudyOutputs, TextResult, TranscriptSegment
+from .models import StructuredResult, StudyOutputs, TextResult, TranscriptSegment
 
 
 class Transcriber(Protocol):
@@ -75,7 +75,35 @@ class CodexStudyBackend:
 
     def process(self, transcript_srt: str, source_context: dict[str, Any]) -> StudyOutputs:
         prompt = build_study_prompt(transcript_srt, source_context)
-        command = build_codex_exec_command(self.schema_path, model=self.model)
+        result = CodexStructuredBackend(
+            model=self.model,
+            timeout_seconds=self.timeout_seconds,
+        ).process(prompt, self.schema_path)
+        payload = result.payload
+        warnings = payload.get("warnings", [])
+        if not isinstance(warnings, list) or not all(isinstance(item, str) for item in warnings):
+            raise CodexError("Codex 输出字段 warnings 必须是字符串数组")
+        return StudyOutputs(
+            clean_transcript_markdown=_require_text(payload, "clean_transcript_markdown"),
+            audit_markdown=_require_text(payload, "audit_markdown"),
+            summary_markdown=_require_text(payload, "summary_markdown"),
+            warnings=tuple(warnings),
+            usage=result.usage,
+            call_count=1,
+            elapsed_seconds=result.elapsed_seconds,
+            backend_metadata=result.backend_metadata,
+        )
+
+
+class CodexStructuredBackend:
+    name = "codex-exec-structured"
+
+    def __init__(self, *, model: str | None = None, timeout_seconds: int = 900) -> None:
+        self.model = model
+        self.timeout_seconds = timeout_seconds
+
+    def process(self, prompt: str, schema_path: Path) -> StructuredResult:
+        command = build_codex_exec_command(schema_path.resolve(), model=self.model)
         cli_version = _read_codex_version()
         started = time.monotonic()
         try:
@@ -99,16 +127,9 @@ class CodexStudyBackend:
             detail = _safe_error_tail(completed.stderr)
             raise CodexError(f"codex exec 失败（退出码 {completed.returncode}）：{detail}")
         payload, usage = parse_codex_jsonl(completed.stdout)
-        warnings = payload.get("warnings", [])
-        if not isinstance(warnings, list) or not all(isinstance(item, str) for item in warnings):
-            raise CodexError("Codex 输出字段 warnings 必须是字符串数组")
-        return StudyOutputs(
-            clean_transcript_markdown=_require_text(payload, "clean_transcript_markdown"),
-            audit_markdown=_require_text(payload, "audit_markdown"),
-            summary_markdown=_require_text(payload, "summary_markdown"),
-            warnings=tuple(warnings),
+        return StructuredResult(
+            payload=payload,
             usage=usage,
-            call_count=1,
             elapsed_seconds=elapsed,
             backend_metadata={
                 "cli_version": cli_version,

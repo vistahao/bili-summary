@@ -17,6 +17,10 @@ class Settings:
     cost_submission_limit_cny: float = 1.0
     bilibili_cookie_file: Path | None = None
     codex_model: str | None = None
+    long_chunk_target_minutes: int = 15
+    long_chunk_max_minutes: int = 20
+    deep_chunk_target_minutes: int = 50
+    deep_chunk_max_minutes: int = 55
 
 
 def load_settings(path: Path | None = None) -> Settings:
@@ -36,6 +40,18 @@ def load_settings(path: Path | None = None) -> Settings:
         ),
         bilibili_cookie_file=Path(cookie_value).expanduser() if cookie_value else None,
         codex_model=codex_model or None,
+        long_chunk_target_minutes=parser.getint(
+            "long_processing", "chunk_target_minutes", fallback=15
+        ),
+        long_chunk_max_minutes=parser.getint(
+            "long_processing", "chunk_max_minutes", fallback=20
+        ),
+        deep_chunk_target_minutes=parser.getint(
+            "long_processing", "deep_chunk_target_minutes", fallback=50
+        ),
+        deep_chunk_max_minutes=parser.getint(
+            "long_processing", "deep_chunk_max_minutes", fallback=55
+        ),
     )
     if settings.audit_level not in VALID_AUDIT_LEVELS:
         raise ValueError(f"无效的 audit_level：{settings.audit_level}")
@@ -43,4 +59,12 @@ def load_settings(path: Path | None = None) -> Settings:
         raise ValueError(f"无效的 transcriber_mode：{settings.transcriber_mode}")
     if settings.cost_submission_limit_cny < 0:
         raise ValueError("cost_submission_limit_cny 不能小于 0")
+    if settings.long_chunk_target_minutes <= 0:
+        raise ValueError("chunk_target_minutes 必须大于 0")
+    if settings.long_chunk_max_minutes < settings.long_chunk_target_minutes:
+        raise ValueError("chunk_max_minutes 不能小于 chunk_target_minutes")
+    if settings.deep_chunk_target_minutes <= 0:
+        raise ValueError("deep_chunk_target_minutes 必须大于 0")
+    if settings.deep_chunk_max_minutes < settings.deep_chunk_target_minutes:
+        raise ValueError("deep_chunk_max_minutes 不能小于 deep_chunk_target_minutes")
     return settings

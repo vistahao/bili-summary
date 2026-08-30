@@ -19,7 +19,12 @@ class ConfigTests(unittest.TestCase):
                 "[bilibili]\n"
                 "cookie_file = ~/.secrets/bili-cookie.txt\n"
                 "[codex]\n"
-                "model = gpt-test\n",
+                "model = gpt-test\n"
+                "[long_processing]\n"
+                "chunk_target_minutes = 10\n"
+                "chunk_max_minutes = 12\n"
+                "deep_chunk_target_minutes = 40\n"
+                "deep_chunk_max_minutes = 45\n",
                 encoding="utf-8",
             )
             settings = load_settings(config_path)
@@ -32,6 +37,8 @@ class ConfigTests(unittest.TestCase):
                 Path("~/.secrets/bili-cookie.txt").expanduser(),
             )
             self.assertEqual(settings.codex_model, "gpt-test")
+            self.assertEqual(settings.long_chunk_target_minutes, 10)
+            self.assertEqual(settings.deep_chunk_max_minutes, 45)
 
 
 if __name__ == "__main__":

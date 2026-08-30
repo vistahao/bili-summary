@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "clean_markdown": {"type": "string", "minLength": 1},
+    "basic_audit_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": ["疑似字幕错误", "疑似讲者知识错误"]
+          },
+          "timestamp": {"type": "string", "pattern": "^\\[\\d{2}:\\d{2}:\\d{2}\\]$"},
+          "quote": {"type": "string", "minLength": 1},
+          "concern": {"type": "string", "minLength": 1}
+        },
+        "required": ["category", "timestamp", "quote", "concern"],
+        "additionalProperties": false
+      }
+    },
+    "summary_notes_markdown": {"type": "string", "minLength": 1},
+    "warnings": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "required": ["clean_markdown", "basic_audit_items", "summary_notes_markdown", "warnings"],
+  "additionalProperties": false
+}

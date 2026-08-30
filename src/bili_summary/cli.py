@@ -12,6 +12,7 @@ from .adapters import CodexError
 from .bilibili import BilibiliError
 from .config import Settings, load_settings
 from .inputs import InputError, parse_bilibili_input, parse_local_mp4
+from .long_pipeline import run_bilibili_long_pipeline
 from .models import InputSpec
 from .naming import build_archive_path
 from .pipeline import run_bilibili_pipeline
@@ -20,7 +21,7 @@ from .pipeline import run_bilibili_pipeline
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bili-summary",
-        description="哔哩哔哩与本地 MP4 学习资料整理工具（阶段 2）",
+        description="哔哩哔哩与本地 MP4 学习资料整理工具（阶段 3）",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--config", type=Path, help="非秘密 INI 配置文件路径")
@@ -37,6 +38,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="覆盖同名已完成文本成果并再次调用 Codex",
+    )
+    run_parser.add_argument(
+        "--long",
+        action="store_true",
+        help="使用可缓存、可恢复的长字幕分段流程",
+    )
+    run_parser.add_argument(
+        "--compare-deep",
+        action="store_true",
+        help="长流程完成 basic 后，独立执行 deep 全文审校并生成对比文件",
     )
     _add_archive_arguments(run_parser)
 
@@ -93,7 +104,7 @@ def _doctor() -> dict[str, Any]:
         "ffprobe": shutil.which("ffprobe"),
         "valid_git_worktree": (project_root / ".git" / "HEAD").exists(),
         "bilibili_cookie_configured": False,
-        "stage": 2,
+        "stage": 3,
     }
 
 
@@ -101,8 +112,8 @@ def _print_result(result: dict[str, Any], as_json: bool) -> None:
     if as_json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
-    if result.get("stage") == 2 and "python" in result:
-        print("阶段 2 只读环境检查")
+    if result.get("stage") == 3 and "python" in result:
+        print("阶段 3 只读环境检查")
         for key, value in result.items():
             print(f"{key}: {value}")
         return
@@ -133,21 +144,42 @@ def main(argv: Sequence[str] | None = None) -> int:
             if settings.bilibili_cookie_file:
                 doctor["bilibili_cookie_file_exists"] = settings.bilibili_cookie_file.is_file()
             doctor["codex_model"] = settings.codex_model or "codex-cli-default"
+            doctor["long_chunk_minutes"] = {
+                "target": settings.long_chunk_target_minutes,
+                "max": settings.long_chunk_max_minutes,
+                "deep_target": settings.deep_chunk_target_minutes,
+                "deep_max": settings.deep_chunk_max_minutes,
+            }
             _print_result(doctor, args.as_json)
             return 0
         if args.command == "run":
             spec = parse_bilibili_input(args.source)
+            if args.compare_deep and not args.long:
+                raise ValueError("--compare-deep 只能与 --long 一起使用")
             if args.execute:
                 project_root = Path(__file__).resolve().parents[2]
-                result = run_bilibili_pipeline(
-                    spec,
-                    settings,
-                    subject=args.subject,
-                    course=args.course,
-                    title_override=args.title,
-                    schema_path=project_root / "schemas" / "study_outputs.schema.json",
-                    force=args.force,
-                )
+                if args.long:
+                    result = run_bilibili_long_pipeline(
+                        spec,
+                        settings,
+                        subject=args.subject,
+                        course=args.course,
+                        title_override=args.title,
+                        schemas_dir=project_root / "schemas",
+                        compare_deep=args.compare_deep,
+                        force=args.force,
+                        progress=lambda message: print(message, file=sys.stderr),
+                    )
+                else:
+                    result = run_bilibili_pipeline(
+                        spec,
+                        settings,
+                        subject=args.subject,
+                        course=args.course,
+                        title_override=args.title,
+                        schema_path=project_root / "schemas" / "study_outputs.schema.json",
+                        force=args.force,
+                    )
                 _print_result(result, args.as_json)
                 return 0
         else:
