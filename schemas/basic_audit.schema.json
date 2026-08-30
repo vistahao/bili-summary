@@ -24,12 +24,8 @@
         "additionalProperties": false
       }
     },
-    "coverage_statement": {"type": "string", "minLength": 1},
-    "warnings": {
-      "type": "array",
-      "items": {"type": "string"}
-    }
+    "warnings": {"type": "array", "items": {"type": "string"}}
   },
-  "required": ["audit_items", "coverage_statement", "warnings"],
+  "required": ["audit_items", "warnings"],
   "additionalProperties": false
 }

@@ -30,6 +30,9 @@ class AdapterTests(unittest.TestCase):
         explicit = build_codex_exec_command(Path("schema.json"), model="test-model")
         self.assertEqual(explicit[explicit.index("--model") + 1], "test-model")
 
+        reasoned = build_codex_exec_command(Path("schema.json"), reasoning="high")
+        self.assertIn('model_reasoning_effort="high"', reasoned)
+
     def test_parses_structured_codex_events_and_usage(self) -> None:
         final = {
             "clean_transcript_markdown": "# 整理稿",

@@ -10,7 +10,7 @@
         "properties": {
           "category": {
             "type": "string",
-            "enum": ["疑似字幕错误", "疑似讲者知识错误"]
+            "enum": ["疑似字幕错误", "疑似知识或逻辑错误"]
           },
           "timestamp": {"type": "string", "pattern": "^\\[\\d{2}:\\d{2}:\\d{2}\\]$"},
           "quote": {"type": "string", "minLength": 1},

@@ -59,3 +59,29 @@ class StructuredResult:
     usage: dict[str, int]
     elapsed_seconds: float
     backend_metadata: dict[str, str]
+
+
+@dataclass(frozen=True)
+class TextProfile:
+    name: str
+    driver: str
+    model: str | None
+    reasoning: str
+    max_output_tokens: int = 32768
+
+    def to_dict(self) -> dict[str, str | None]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class TextExecutionPlan:
+    audit_level: str
+    routes: dict[str, TextProfile]
+    preset: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "audit_level": self.audit_level,
+            "preset": self.preset,
+            "routes": {task: profile.to_dict() for task, profile in self.routes.items()},
+        }
