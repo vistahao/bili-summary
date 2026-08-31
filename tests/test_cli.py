@@ -39,6 +39,22 @@ class CliTests(unittest.TestCase):
         result = json.loads(output.getvalue())
         self.assertEqual(result["processing"]["content_mode"], "practice")
 
+    def test_cache_commands_are_read_only_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = root / "config.ini"
+            config.write_text(
+                f"[storage]\ndata_root = {root / 'data'}\n",
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--config", str(config), "cache-clean", "--json"])
+            self.assertEqual(exit_code, 0)
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["status"], "cache_cleanup_preview")
+            self.assertEqual(result["deleted_items"], 0)
+
     def test_local_preview_does_not_hash_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             sample = Path(temp_dir) / "本地课程.mp4"

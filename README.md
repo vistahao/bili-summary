@@ -27,6 +27,10 @@
 ./bili-summary --config config.ini run-file "/mnt/d/Downloads/04_公考事业编/视频课程/行测/20250828 片段刷题4.mp4" --subject "公考事业编" --course "行测" --long --content-mode practice --audit-level basic --execute --yes --json
 ./bili-summary --config config.ini check-aliyun-asr --json
 ./bili-summary --config config.ini compare-aliyun-asr "/path/to/5-10分钟样本.wav" --yes --json
+./bili-summary --config config.ini cache-status --json
+./bili-summary --config config.ini cache-clean --json
+# 到期后先预览，再显式执行；非交互执行还必须增加 --yes
+./bili-summary --config config.ini cache-clean --execute --yes --json
 ```
 
 `run` 不加 `--execute` 时只输出离线预览。`run-file` 默认也只读取文件元数据，不计算全文哈希；`--probe` 增加只读轨道检查。`--prepare-audio-sample` 会自动计算 SHA-256、确认确实没有可用字幕，再生成单声道 16 kHz、16-bit WAV；样本时长只允许 5～10 分钟，默认 10 分钟。该命令不调用语音或文本模型。`run-file --execute` 才进入正式流程，文本来源顺序是同名外置 SRT、可提取的内嵌字幕、Qwen3、Paraformer、显式配置的本地 whisper.cpp；在线转写前显示完整时长的最坏费用估算并应用本机提交门槛。
@@ -44,6 +48,8 @@
 内容模式默认是 `lecture`，适合知识讲座；刷题课显式使用 `--content-mode practice`。刷题模式保留题意、答案、教师推理、选项辨析、可迁移方法和易错点，过滤课前歌曲、点名、收音确认、投票等待、无教学作用的正确率播报与闲聊。连续删除区间只在完整整理稿中保留一行时间范围，不复述或解释歌词。
 
 长流程的依赖顺序是“原始字幕 → Basic 审校 → 完整整理 → 分片总结 → 最终总结”。整理只采用有上下文支持的高置信字幕修正；知识或逻辑风险不会被擅自改写，只作为讲者观点的表述约束并进入审校报告。Deep 审校仍是独立的可选全文风险检查。切换内容模式不会重新转写音频；在文本路由和字幕未变时，Basic 审校缓存仍可复用，整理与总结会按新模式重做。
+
+`cache-status` 只读统计缓存总量、受管临时音频和5天到期时间。`cache-clean` 默认仍是只读预览；只有增加 `--execute` 并在交互终端输入 `clean`，或非交互时同时增加 `--yes`，才删除已到期且通过路径、文件名、元数据和符号链接检查的临时 WAV 及对应元数据。它不会删除字幕、厂商原始响应、文本恢复缓存或用户成果。
 
 同一成果目录已经完整时，程序不会重复调用文本模型。每个任务和切片完成后保存结构化缓存；缓存指纹包含任务、后端、模型、推理档位、提示词和 Schema。中断后只执行缺失步骤，切换配置不会误用旧结果；显式使用 `--force` 才按本次方案重做。
 

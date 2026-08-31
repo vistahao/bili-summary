@@ -20,6 +20,7 @@ from .aliyun_asr import (
 )
 from .asr_evaluation import run_aliyun_asr_comparison
 from .bilibili import BilibiliError
+from .cache_management import clean_cache, inspect_cache
 from .config import Settings, load_settings
 from .evaluation import EVALUATION_TASKS, run_text_profile_comparison
 from .inputs import InputError, parse_bilibili_input, parse_local_mp4
@@ -213,6 +214,28 @@ def build_parser() -> argparse.ArgumentParser:
     asr_compare_parser.add_argument("--output", type=Path, help="覆盖对比成果目录")
     asr_compare_parser.add_argument("--yes", action="store_true", help="确认上传与最多 1 元提交门槛")
     asr_compare_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    cache_status_parser = subparsers.add_parser(
+        "cache-status",
+        help="只读显示缓存占用、受管临时音频和5天到期状态",
+    )
+    cache_status_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    cache_clean_parser = subparsers.add_parser(
+        "cache-clean",
+        help="预览或清理已满5天的受管临时音频；默认不删除",
+    )
+    cache_clean_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="实际删除通过校验且已到期的临时音频及其元数据",
+    )
+    cache_clean_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="确认执行删除，供非交互运行使用",
+    )
+    cache_clean_parser.add_argument("--json", action="store_true", dest="as_json")
     return parser
 
 
@@ -304,6 +327,30 @@ def _print_result(result: dict[str, Any], as_json: bool) -> None:
             )
         print(result["notice"])
         return
+    if result.get("status") in {
+        "cache_inventory",
+        "cache_cleanup_preview",
+        "cache_cleanup_complete",
+    }:
+        print(f"缓存目录: {result['cache_root']}")
+        if result["status"] == "cache_inventory":
+            print(f"总占用: {_format_bytes(int(result['total_bytes']))}")
+            print(f"受管临时音频: {_format_bytes(int(result['managed_audio_bytes']))}")
+            print(f"当前可清理: {_format_bytes(int(result['eligible_bytes']))}")
+            for item in result["managed_audio"]:
+                state = "可清理" if item["eligible_for_cleanup"] else "保留"
+                print(
+                    f"- {state}: {item['audio_path']} "
+                    f"({_format_bytes(int(item['size_bytes']))})；"
+                    f"到期 {item['eligible_for_cleanup_at']}"
+                )
+        else:
+            print(f"符合条件: {result['eligible_items']} 项，{_format_bytes(int(result['eligible_bytes']))}")
+            print(f"实际删除: {result['deleted_items']} 项，{_format_bytes(int(result['deleted_bytes']))}")
+        for warning in result.get("warnings", []):
+            print(f"警告: {warning}")
+        print(result["notice"])
+        return
     print(f"任务状态: {result['status']}")
     print(f"成果目录: {result['output_dir']}")
     if result.get("notice"):
@@ -317,11 +364,40 @@ def _stderr_input(prompt: str) -> str:
     return sys.stdin.readline().rstrip("\n")
 
 
+def _format_bytes(value: int) -> str:
+    amount = float(value)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if amount < 1024 or unit == "TiB":
+            return f"{amount:.1f} {unit}" if unit != "B" else f"{int(amount)} B"
+        amount /= 1024
+    return f"{value} B"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
         settings = load_settings(args.config)
+        if args.command == "cache-status":
+            result = inspect_cache(settings.data_root / ".bili-summary-cache")
+            _print_result(result, args.as_json)
+            return 0
+        if args.command == "cache-clean":
+            cache_root = settings.data_root / ".bili-summary-cache"
+            if args.execute and not args.yes:
+                preview = clean_cache(cache_root, execute=False)
+                if not sys.stdin.isatty():
+                    raise ValueError("非交互清理必须同时使用 --execute 和 --yes")
+                print(
+                    f"将删除 {preview['eligible_items']} 项已到期临时音频，"
+                    f"共 {_format_bytes(int(preview['eligible_bytes']))}。",
+                    file=sys.stderr,
+                )
+                if _stderr_input("输入 clean 继续，其他内容取消: ").strip().lower() != "clean":
+                    raise ValueError("用户取消；未删除缓存")
+            result = clean_cache(cache_root, execute=args.execute)
+            _print_result(result, args.as_json)
+            return 0
         if args.command == "doctor":
             doctor = _doctor()
             doctor["bilibili_cookie_configured"] = bool(settings.bilibili_cookie_file)
