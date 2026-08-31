@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import subprocess
 import tempfile
@@ -204,6 +205,7 @@ class DeepSeekHttpBackend:
         base_url: str = "https://api.deepseek.com",
         max_output_tokens: int = 32768,
         timeout_seconds: int = 900,
+        transport_retry_delay_seconds: float = 1.0,
         transport: Callable[[urllib.request.Request, float], bytes] | None = None,
     ) -> None:
         if not api_key.strip():
@@ -214,6 +216,7 @@ class DeepSeekHttpBackend:
         self.base_url = base_url.rstrip("/")
         self.max_output_tokens = max_output_tokens
         self.timeout_seconds = timeout_seconds
+        self.transport_retry_delay_seconds = max(0.0, transport_retry_delay_seconds)
         self.transport = transport or _urlopen_bytes
 
     def process(self, prompt: str, schema_path: Path) -> StructuredResult:
@@ -252,13 +255,24 @@ class DeepSeekHttpBackend:
         )
         started = time.monotonic()
         try:
-            raw_response = self.transport(request, float(self.timeout_seconds))
+            raw_response, transport_attempts = _deepseek_transport_with_retry(
+                self.transport,
+                request,
+                float(self.timeout_seconds),
+                self.transport_retry_delay_seconds,
+            )
         except urllib.error.HTTPError as exc:
             raise _deepseek_http_error(exc) from exc
         except urllib.error.URLError as exc:
             raise DeepSeekError(
                 f"DeepSeek 网络请求失败：{exc.reason}",
                 code="network_error",
+                retryable=True,
+            ) from exc
+        except (http.client.IncompleteRead, http.client.RemoteDisconnected, ConnectionError) as exc:
+            raise DeepSeekError(
+                "DeepSeek 响应传输中断，自动重试后仍未完整返回",
+                code="incomplete_response",
                 retryable=True,
             ) from exc
         except TimeoutError as exc:
@@ -306,6 +320,7 @@ class DeepSeekHttpBackend:
                 "model": str(response.get("model") or self.model),
                 "reasoning": self.reasoning,
                 "finish_reason": str(finish_reason or "unknown"),
+                "transport_attempts": transport_attempts,
                 **pricing,
             },
         )
@@ -410,6 +425,24 @@ def _read_codex_version() -> str:
 def _urlopen_bytes(request: urllib.request.Request, timeout: float) -> bytes:
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return response.read()
+
+
+def _deepseek_transport_with_retry(
+    transport: Callable[[urllib.request.Request, float], bytes],
+    request: urllib.request.Request,
+    timeout: float,
+    retry_delay_seconds: float,
+) -> tuple[bytes, int]:
+    """Retry one interrupted response; completed pipeline steps remain separately cached."""
+    for attempt in (1, 2):
+        try:
+            return transport(request, timeout), attempt
+        except (http.client.IncompleteRead, http.client.RemoteDisconnected, ConnectionError):
+            if attempt == 2:
+                raise
+            if retry_delay_seconds:
+                time.sleep(retry_delay_seconds)
+    raise AssertionError("unreachable")
 
 
 def _deepseek_http_error(exc: urllib.error.HTTPError) -> DeepSeekError:

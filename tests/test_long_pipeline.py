@@ -22,10 +22,12 @@ from test_bilibili import FakeBilibiliClient
 class FakeLongBackend:
     def __init__(self, *, fail_on_summary: bool = False) -> None:
         self.calls = []
+        self.prompts = []
         self.fail_on_summary = fail_on_summary
 
     def process(self, prompt, schema_path):  # type: ignore[no-untyped-def]
         self.calls.append(schema_path.name)
+        self.prompts.append((schema_path.name, prompt))
         if schema_path.name == "organize_outputs.schema.json":
             payload = {
                 "clean_markdown": "## 第一部分 [00:00:00]\n\n完整内容。",
@@ -102,9 +104,9 @@ class LongPipelineTests(unittest.TestCase):
             self.assertEqual(
                 failing.calls,
                 [
+                    "basic_audit.schema.json",
                     "organize_outputs.schema.json",
                     "summary_notes.schema.json",
-                    "basic_audit.schema.json",
                     "summary_outputs.schema.json",
                 ],
             )
@@ -261,7 +263,7 @@ class LongPipelineTests(unittest.TestCase):
             )
             self.assertEqual(
                 codex_backend.calls,
-                ["organize_outputs.schema.json", "basic_audit.schema.json"],
+                ["basic_audit.schema.json", "organize_outputs.schema.json"],
             )
             self.assertEqual(
                 deepseek_backend.calls,
@@ -271,7 +273,111 @@ class LongPipelineTests(unittest.TestCase):
                 (Path(result["output_dir"]) / "source.json").read_text(encoding="utf-8")
             )
             self.assertEqual(source["processing"]["text"]["by_task"]["summary"]["calls"], 2)
+            self.assertEqual(source["processing"]["content_mode"], "lecture")
             self.assertNotIn("secret", json.dumps(source).lower())
+
+            organize_prompt = next(
+                prompt
+                for schema, prompt in codex_backend.prompts
+                if schema == "organize_outputs.schema.json"
+            )
+            notes_prompt = next(
+                prompt
+                for schema, prompt in deepseek_backend.prompts
+                if schema == "summary_notes.schema.json"
+            )
+            final_prompt = next(
+                prompt
+                for schema, prompt in deepseek_backend.prompts
+                if schema == "summary_outputs.schema.json"
+            )
+            self.assertIn("测试风险", organize_prompt)
+            self.assertIn("完整内容", notes_prompt)
+            self.assertNotIn("<subtitle_chunk>", notes_prompt)
+            self.assertIn("测试风险", final_prompt)
+
+    def test_practice_mode_defines_learning_scope_and_is_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_root=Path(temp_dir))
+            backend = FakeLongBackend()
+            result = run_bilibili_long_pipeline(
+                parse_bilibili_input("BV1fKtN6DErG"),
+                settings,
+                subject="测试",
+                course=None,
+                title_override=None,
+                schemas_dir=Path("schemas"),
+                compare_deep=False,
+                audit_level="basic",
+                content_mode="practice",
+                client=FakeBilibiliClient(),
+                backend=backend,
+            )
+            organize_prompt = next(
+                prompt
+                for schema, prompt in backend.prompts
+                if schema == "organize_outputs.schema.json"
+            )
+            notes_prompt = next(
+                prompt
+                for schema, prompt in backend.prompts
+                if schema == "summary_notes.schema.json"
+            )
+            final_prompt = next(
+                prompt
+                for schema, prompt in backend.prompts
+                if schema == "summary_outputs.schema.json"
+            )
+            self.assertIn("本次内容模式是 practice", organize_prompt)
+            self.assertIn("不得复述或解释歌词", organize_prompt)
+            self.assertIn("题意、答案、教师推理、选项辨析", organize_prompt)
+            self.assertIn("不得从原始字幕补回", notes_prompt)
+            self.assertIn("不要为歌曲", final_prompt)
+            source = json.loads(
+                (Path(result["output_dir"]) / "source.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(source["processing"]["content_mode"], "practice")
+            self.assertEqual(source["processing"]["pipeline_version"], "content-aware-v1")
+
+    def test_switching_to_practice_reuses_content_independent_audit_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = Settings(data_root=Path(temp_dir))
+            arguments = {
+                "subject": "测试",
+                "course": None,
+                "title_override": None,
+                "schemas_dir": Path("schemas"),
+                "compare_deep": False,
+                "audit_level": "basic",
+                "client": FakeBilibiliClient(),
+            }
+            first_backend = FakeLongBackend()
+            run_bilibili_long_pipeline(
+                parse_bilibili_input("BV1fKtN6DErG"),
+                settings,
+                content_mode="lecture",
+                backend=first_backend,
+                **arguments,
+            )
+
+            practice_backend = FakeLongBackend()
+            result = run_bilibili_long_pipeline(
+                parse_bilibili_input("BV1fKtN6DErG"),
+                settings,
+                content_mode="practice",
+                backend=practice_backend,
+                **arguments,
+            )
+            self.assertEqual(
+                practice_backend.calls,
+                [
+                    "organize_outputs.schema.json",
+                    "summary_notes.schema.json",
+                    "summary_outputs.schema.json",
+                ],
+            )
+            self.assertEqual(result["text"]["calls_reused_this_run"], 1)
+            self.assertEqual(result["content_mode"], "practice")
 
     def test_missing_deepseek_key_stops_before_writing_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

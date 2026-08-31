@@ -12,6 +12,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.text_routes["summary"], "codex_default")
         self.assertEqual(settings.text_routes["basic_audit"], "deepseek_pro_high")
         self.assertEqual(settings.text_routes["deep_audit"], "deepseek_pro_high")
+        self.assertEqual(settings.content_mode, "lecture")
         self.assertEqual(settings.text_profiles["deepseek_flash_high"].reasoning, "high")
 
     def test_loads_non_secret_settings(self) -> None:
@@ -22,12 +23,17 @@ class ConfigTests(unittest.TestCase):
                 "data_root = /tmp/study-data\n"
                 "[processing]\n"
                 "audit_level = deep\n"
+                "content_mode = practice\n"
                 "transcriber_mode = local\n"
                 "cost_submission_limit_cny = 0.5\n"
                 "[bilibili]\n"
                 "cookie_file = ~/.secrets/bili-cookie.txt\n"
                 "[codex]\n"
                 "model = gpt-test\n"
+                "[aliyun_asr]\n"
+                "workspace_id = llm-test-workspace\n"
+                "api_key_env = TEST_DASHSCOPE_KEY\n"
+                "api_key_file = ~/.secrets/dashscope-key.txt\n"
                 "[long_processing]\n"
                 "chunk_target_minutes = 10\n"
                 "chunk_max_minutes = 12\n"
@@ -55,6 +61,7 @@ class ConfigTests(unittest.TestCase):
             settings = load_settings(config_path)
             self.assertEqual(settings.data_root, Path("/tmp/study-data"))
             self.assertEqual(settings.audit_level, "deep")
+            self.assertEqual(settings.content_mode, "practice")
             self.assertEqual(settings.transcriber_mode, "local")
             self.assertEqual(settings.cost_submission_limit_cny, 0.5)
             self.assertEqual(
@@ -62,6 +69,12 @@ class ConfigTests(unittest.TestCase):
                 Path("~/.secrets/bili-cookie.txt").expanduser(),
             )
             self.assertEqual(settings.codex_model, "gpt-test")
+            self.assertEqual(settings.aliyun_asr_workspace_id, "llm-test-workspace")
+            self.assertEqual(settings.aliyun_asr_api_key_env, "TEST_DASHSCOPE_KEY")
+            self.assertEqual(
+                settings.aliyun_asr_api_key_file,
+                Path("~/.secrets/dashscope-key.txt").expanduser(),
+            )
             self.assertEqual(settings.long_chunk_target_minutes, 10)
             self.assertEqual(settings.deep_chunk_max_minutes, 45)
             self.assertEqual(settings.text_routes["summary"], "deepseek_test")

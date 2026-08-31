@@ -124,6 +124,7 @@ def choose_execution_plan(
     output_fn("\n文本处理方案确认")
     output_fn(f"视频: {preview.get('title', '未知标题')}")
     output_fn(f"时长: {preview.get('duration', '未知')}；文本来源: {preview.get('source', '未知')}")
+    output_fn(f"内容模式: {preview.get('content_mode', 'lecture')}")
     output_fn(f"预计调用: {preview.get('estimated_calls', '未知')}")
     for line in format_plan(plan):
         output_fn(line)

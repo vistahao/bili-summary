@@ -1,3 +1,4 @@
+import http.client
 import io
 import json
 import unittest
@@ -8,6 +9,61 @@ from bili_summary.adapters import DeepSeekError, DeepSeekHttpBackend
 
 
 class DeepSeekTests(unittest.TestCase):
+    def test_retries_one_incomplete_http_response(self) -> None:
+        attempts = 0
+
+        def transport(_request, _timeout):  # type: ignore[no-untyped-def]
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise http.client.IncompleteRead(b'{"partial":', 20)
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "content": json.dumps(
+                                    {"summary_markdown": "# 总结", "warnings": []}
+                                )
+                            },
+                        }
+                    ]
+                }
+            ).encode()
+
+        backend = DeepSeekHttpBackend(
+            model="test",
+            reasoning="off",
+            api_key="key",
+            transport_retry_delay_seconds=0,
+            transport=transport,
+        )
+        result = backend.process("测试", Path("schemas/summary_outputs.schema.json"))
+        self.assertEqual(attempts, 2)
+        self.assertEqual(result.backend_metadata["transport_attempts"], 2)
+
+    def test_normalizes_repeated_incomplete_http_response(self) -> None:
+        attempts = 0
+
+        def transport(_request, _timeout):  # type: ignore[no-untyped-def]
+            nonlocal attempts
+            attempts += 1
+            raise http.client.IncompleteRead(b"partial", 20)
+
+        backend = DeepSeekHttpBackend(
+            model="test",
+            reasoning="off",
+            api_key="key",
+            transport_retry_delay_seconds=0,
+            transport=transport,
+        )
+        with self.assertRaises(DeepSeekError) as raised:
+            backend.process("测试", Path("schemas/summary_outputs.schema.json"))
+        self.assertEqual(attempts, 2)
+        self.assertEqual(raised.exception.code, "incomplete_response")
+        self.assertTrue(raised.exception.retryable)
+
     def test_sends_json_mode_and_does_not_persist_reasoning_content(self) -> None:
         captured = {}
 

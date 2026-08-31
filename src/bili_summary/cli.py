@@ -5,16 +5,32 @@ import json
 import os
 import shutil
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence
 
 from . import __version__
 from .adapters import TextBackendError
+from .aliyun_asr import (
+    AliyunAsrError,
+    AliyunTemporaryUploadClient,
+    COMPARISON_MODELS,
+    estimate_comparison_cost_cny,
+    load_aliyun_asr_api_key,
+)
+from .asr_evaluation import run_aliyun_asr_comparison
 from .bilibili import BilibiliError
 from .config import Settings, load_settings
 from .evaluation import EVALUATION_TASKS, run_text_profile_comparison
 from .inputs import InputError, parse_bilibili_input, parse_local_mp4
+from .local_asr import LocalAsrError
+from .local_pipeline import (
+    completed_local_result,
+    estimate_local_online_cost,
+    run_local_file_pipeline,
+)
 from .long_pipeline import run_bilibili_long_pipeline
+from .media import MediaError, inspect_local_media, prepare_transcription_sample
 from .models import InputSpec
 from .naming import build_archive_path
 from .text_routing import (
@@ -27,7 +43,7 @@ from .text_routing import (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bili-summary",
-        description="哔哩哔哩与本地 MP4 学习资料整理工具（阶段 3.1）",
+        description="哔哩哔哩与本地 MP4 学习资料整理工具（阶段 5）",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--config", type=Path, help="非秘密 INI 配置文件路径")
@@ -61,6 +77,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="覆盖本次审校档位；--compare-deep 等同于 deep",
     )
     run_parser.add_argument(
+        "--content-mode",
+        choices=("lecture", "practice"),
+        help="内容整理模式：知识讲座 lecture 或刷题课 practice",
+    )
+    run_parser.add_argument(
         "--profile",
         help="使用 config.ini 中的整体文本预设，例如 quality 或 speed",
     )
@@ -81,9 +102,74 @@ def build_parser() -> argparse.ArgumentParser:
     file_parser = subparsers.add_parser("run-file", help="预览单个本地 MP4 任务")
     file_parser.add_argument("source", help="Windows 盘符路径或 WSL 绝对路径")
     file_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="取得字幕或转写后执行完整文本流水线；省略时只预览",
+    )
+    file_parser.add_argument("--force", action="store_true", help="按本次方案重做文本成果")
+    file_parser.add_argument("--long", action="store_true", help="标记长本地课程（当前流程自动分片）")
+    file_parser.add_argument(
+        "--compare-deep",
+        action="store_true",
+        help="完成 Basic 后独立执行 Deep 审校并生成对比",
+    )
+    file_parser.add_argument(
+        "--audit-level",
+        choices=("off", "basic", "deep"),
+        help="覆盖本次审校档位",
+    )
+    file_parser.add_argument(
+        "--content-mode",
+        choices=("lecture", "practice"),
+        help="内容整理模式：知识讲座 lecture 或刷题课 practice",
+    )
+    file_parser.add_argument("--profile", help="使用 config.ini 中的整体文本预设")
+    file_parser.add_argument(
+        "--route",
+        action="append",
+        default=[],
+        metavar="TASK=PROFILE",
+        help="覆盖一个文本任务的命名配置，可重复使用",
+    )
+    file_parser.add_argument(
+        "--transcriber",
+        choices=("auto", "online", "local"),
+        help="覆盖本次无字幕转写模式",
+    )
+    file_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="确认音频上传、费用门槛和文本方案，供非交互运行使用",
+    )
+    file_parser.add_argument(
         "--hash",
         action="store_true",
         help="顺序读取文件并计算 SHA-256；大文件默认延后",
+    )
+    file_parser.add_argument(
+        "--probe",
+        action="store_true",
+        help="用 ffprobe 只读检查媒体轨道和字幕来源",
+    )
+    file_parser.add_argument(
+        "--prepare-audio-sample",
+        action="store_true",
+        help="无字幕时生成供转写比较使用的临时 WAV，不修改原 MP4",
+    )
+    file_parser.add_argument(
+        "--sample-start",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help="音频样本起点秒数（默认 0）",
+    )
+    file_parser.add_argument(
+        "--sample-minutes",
+        type=int,
+        choices=range(5, 11),
+        default=10,
+        metavar="5-10",
+        help="音频样本分钟数（默认 10）",
     )
     _add_archive_arguments(file_parser)
 
@@ -112,6 +198,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor_parser = subparsers.add_parser("doctor", help="只读显示当前运行能力")
     doctor_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    asr_check_parser = subparsers.add_parser(
+        "check-aliyun-asr",
+        help="验证两个阿里云模型的鉴权和临时上传权限，不上传音频、不提交转写",
+    )
+    asr_check_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    asr_compare_parser = subparsers.add_parser(
+        "compare-aliyun-asr",
+        help="上传同一 WAV 并执行 Qwen3 Filetrans 与 Paraformer v2 真实比较",
+    )
+    asr_compare_parser.add_argument("source", type=Path, help="5～10 分钟的 16 kHz 单声道 WAV")
+    asr_compare_parser.add_argument("--output", type=Path, help="覆盖对比成果目录")
+    asr_compare_parser.add_argument("--yes", action="store_true", help="确认上传与最多 1 元提交门槛")
+    asr_compare_parser.add_argument("--json", action="store_true", dest="as_json")
     return parser
 
 
@@ -124,6 +225,12 @@ def _add_archive_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _preview(spec: InputSpec, args: argparse.Namespace, settings: Settings) -> dict[str, Any]:
     title = args.title or spec.display_title
+    audit_level = (
+        "deep"
+        if getattr(args, "compare_deep", False)
+        else (getattr(args, "audit_level", None) or settings.audit_level)
+    )
+    content_mode = getattr(args, "content_mode", None) or settings.content_mode
     archive_path = build_archive_path(
         settings.data_root,
         subject=args.subject,
@@ -135,16 +242,13 @@ def _preview(spec: InputSpec, args: argparse.Namespace, settings: Settings) -> d
         "input": spec.to_dict(),
         "archive_path": str(archive_path),
         "processing": {
-            "audit_level": settings.audit_level,
+            "audit_level": audit_level,
+            "content_mode": content_mode,
             "transcriber_mode": settings.transcriber_mode,
             "cost_submission_limit_cny": settings.cost_submission_limit_cny,
             "text_plan": resolve_text_plan(
                 settings,
-                audit_level=(
-                    "deep"
-                    if getattr(args, "compare_deep", False)
-                    else (getattr(args, "audit_level", None) or settings.audit_level)
-                ),
+                audit_level=audit_level,
                 preset=getattr(args, "profile", None),
                 route_overrides=parse_route_overrides(getattr(args, "route", [])),
             ).to_dict(),
@@ -164,7 +268,7 @@ def _doctor() -> dict[str, Any]:
         "ffprobe": shutil.which("ffprobe"),
         "valid_git_worktree": (project_root / ".git" / "HEAD").exists(),
         "bilibili_cookie_configured": False,
-        "stage": "3.1",
+        "stage": "5",
     }
 
 
@@ -172,17 +276,32 @@ def _print_result(result: dict[str, Any], as_json: bool) -> None:
     if as_json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
-    if result.get("stage") == "3.1" and "python" in result:
-        print("阶段 3.1 只读环境检查")
+    if result.get("stage") == "5" and "python" in result:
+        print("阶段 5 只读环境检查")
         for key, value in result.items():
             print(f"{key}: {value}")
         return
     if "input" in result:
         input_data = result["input"]
-        print("离线任务预览")
+        print("临时音频样本已就绪" if result.get("status") == "audio_sample_ready" else "离线任务预览")
         print(f"输入类型: {input_data['source_type']}")
         print(f"规范输入: {input_data['canonical']}")
         print(f"成果目录: {result['archive_path']}")
+        temporary_audio = result.get("temporary_audio")
+        if isinstance(temporary_audio, dict):
+            audio = temporary_audio.get("audio", {})
+            print(f"临时音频: {audio.get('path')}")
+            print(f"复用缓存: {temporary_audio.get('reused')}")
+            print(f"可清理时间: {temporary_audio.get('eligible_for_cleanup_at')}")
+        print(result["notice"])
+        return
+    if result.get("status") == "aliyun_asr_preflight_complete":
+        print("阿里云 ASR 调用前检查完成")
+        for model in result["models"]:
+            print(
+                f"{model['model']}: 临时上传权限可用；"
+                f"单文件上限 {model.get('max_file_size_mb') or '未知'} MiB"
+            )
         print(result["notice"])
         return
     print(f"任务状态: {result['status']}")
@@ -218,6 +337,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for name, profile in settings.text_profiles.items()
             }
             doctor["text_routes"] = settings.text_routes
+            doctor["content_mode"] = settings.content_mode
             doctor["text_presets"] = sorted(settings.text_presets)
             doctor["deepseek_credentials_configured"] = bool(
                 os.environ.get(settings.deepseek_api_key_env)
@@ -226,6 +346,29 @@ def main(argv: Sequence[str] | None = None) -> int:
                     and settings.deepseek_api_key_file.is_file()
                 )
             )
+            doctor["aliyun_asr"] = {
+                "region": "cn-beijing",
+                "models": list(COMPARISON_MODELS),
+                "workspace_configured": bool(settings.aliyun_asr_workspace_id),
+                "credentials_configured": bool(
+                    os.environ.get(settings.aliyun_asr_api_key_env)
+                    or (
+                        settings.aliyun_asr_api_key_file
+                        and settings.aliyun_asr_api_key_file.is_file()
+                    )
+                ),
+                "ten_minute_max_cost_cny": estimate_comparison_cost_cny(600),
+            }
+            doctor["local_asr"] = {
+                "configured": bool(settings.local_asr_binary and settings.local_asr_model),
+                "binary": str(settings.local_asr_binary) if settings.local_asr_binary else None,
+                "binary_exists": bool(
+                    settings.local_asr_binary and settings.local_asr_binary.is_file()
+                ),
+                "model": str(settings.local_asr_model) if settings.local_asr_model else None,
+                "model_exists": bool(settings.local_asr_model and settings.local_asr_model.is_file()),
+                "threads": settings.local_asr_threads,
+            }
             doctor["long_chunk_minutes"] = {
                 "target": settings.long_chunk_target_minutes,
                 "max": settings.long_chunk_max_minutes,
@@ -233,6 +376,43 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "deep_max": settings.deep_chunk_max_minutes,
             }
             _print_result(doctor, args.as_json)
+            return 0
+        if args.command == "check-aliyun-asr":
+            client = AliyunTemporaryUploadClient(
+                api_key=load_aliyun_asr_api_key(settings)
+            )
+            checks = [client.check_model_upload_access(model) for model in COMPARISON_MODELS]
+            _print_result(
+                {
+                    "status": "aliyun_asr_preflight_complete",
+                    "region": "cn-beijing",
+                    "models": checks,
+                    "notice": (
+                        "本次只申请了短时上传策略，用于验证鉴权和模型绑定；"
+                        "没有上传音频、提交转写或产生识别费用。实际调用权仍由首次转写确认。"
+                    ),
+                },
+                args.as_json,
+            )
+            return 0
+        if args.command == "compare-aliyun-asr":
+            if not args.yes:
+                if not sys.stdin.isatty():
+                    raise ValueError("非交互转写比较必须增加 --yes")
+                print(
+                    "将把同一 WAV 分别上传到两个模型绑定的私有临时存储，"
+                    "并提交两次转写；最坏费用受配置的 1 元门槛限制。",
+                    file=sys.stderr,
+                )
+                if _stderr_input("输入 yes 继续，其他内容取消: ").strip().lower() != "yes":
+                    raise ValueError("用户取消；未上传音频或提交转写")
+            result = run_aliyun_asr_comparison(
+                args.source,
+                settings,
+                output_dir=args.output,
+                progress=lambda message: print(message, file=sys.stderr),
+            )
+            _print_result(result, args.as_json)
             return 0
         if args.command == "compare-text":
             if not args.yes:
@@ -265,6 +445,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 requested_audit = (
                     "deep" if args.compare_deep else (args.audit_level or settings.audit_level)
                 )
+                content_mode = args.content_mode or settings.content_mode
                 route_overrides = parse_route_overrides(args.route)
                 result = run_bilibili_long_pipeline(
                     spec,
@@ -275,6 +456,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     schemas_dir=project_root / "schemas",
                     compare_deep=args.compare_deep,
                     audit_level=requested_audit,
+                    content_mode=content_mode,
                     force=args.force,
                     plan_selector=lambda preview: choose_execution_plan(
                         settings,
@@ -292,9 +474,121 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _print_result(result, args.as_json)
                 return 0
         else:
-            spec = parse_local_mp4(args.source, compute_hash=args.hash)
+            if args.execute and args.prepare_audio_sample:
+                raise ValueError("--execute 与 --prepare-audio-sample 不能同时使用")
+            spec = parse_local_mp4(
+                args.source,
+                compute_hash=args.hash or args.prepare_audio_sample or args.execute,
+            )
+            if args.compare_deep and not args.long:
+                raise ValueError("--compare-deep 只能与 --long 一起使用")
+            requested_audit = (
+                "deep" if args.compare_deep else (args.audit_level or settings.audit_level)
+            )
+            content_mode = args.content_mode or settings.content_mode
+            if args.execute and not args.force:
+                completed = completed_local_result(
+                    spec,
+                    settings,
+                    subject=args.subject,
+                    course=args.course,
+                    title_override=args.title,
+                    audit_level=requested_audit,
+                    content_mode=content_mode,
+                )
+                if completed is not None:
+                    _print_result(completed, args.as_json)
+                    return 0
+            media = None
+            if args.probe or args.prepare_audio_sample:
+                media = inspect_local_media(Path(spec.canonical))
+                metadata = dict(spec.metadata)
+                metadata["media_probe_status"] = "complete"
+                metadata["media"] = media
+                spec = replace(spec, metadata=metadata)
+            result = _preview(spec, args, settings)
+            if args.prepare_audio_sample:
+                sample = prepare_transcription_sample(
+                    Path(spec.canonical),
+                    media=media,
+                    source_sha256=spec.metadata["sha256"],
+                    cache_root=settings.data_root / ".bili-summary-cache",
+                    start_seconds=args.sample_start,
+                    duration_seconds=args.sample_minutes * 60,
+                )
+                result["status"] = "audio_sample_ready"
+                result["temporary_audio"] = sample
+                result["notice"] = (
+                    "只生成了可清理的转写比较样本；未调用语音或文本模型，原 MP4 未改动"
+                )
+            if args.execute:
+                if media is None:
+                    media = inspect_local_media(Path(spec.canonical))
+                source_kind = media["text_source"]["kind"]
+                if source_kind in {
+                    "audio_transcription_required",
+                    "unsupported_embedded_subtitle",
+                }:
+                    duration = float(media["probe"]["format"]["duration_seconds"])
+                    costs = estimate_local_online_cost(duration)
+                    mode = args.transcriber or settings.transcriber_mode
+                    if mode in {"auto", "online"}:
+                        print(
+                            f"本地 MP4 无可用字幕；默认提交 qwen3-asr-flash-filetrans，"
+                            f"按完整时长估算最多 {costs['qwen3-asr-flash-filetrans']:.6f} 元，"
+                            f"本机提交门槛 {settings.cost_submission_limit_cny:.6f} 元。",
+                            file=sys.stderr,
+                        )
+                    else:
+                        print("本地 MP4 无可用字幕；本次只使用本地 CPU 转写。", file=sys.stderr)
+                    if not args.yes:
+                        if not sys.stdin.isatty():
+                            raise ValueError("非交互本地执行必须增加 --yes")
+                        if _stderr_input("输入 yes 继续，其他内容取消: ").strip().lower() != "yes":
+                            raise ValueError("用户取消；未提取或上传完整音频")
+                project_root = Path(__file__).resolve().parents[2]
+                route_overrides = parse_route_overrides(args.route)
+                result = run_local_file_pipeline(
+                    spec,
+                    settings,
+                    subject=args.subject,
+                    course=args.course,
+                    title_override=args.title,
+                    schemas_dir=project_root / "schemas",
+                    compare_deep=args.compare_deep,
+                    audit_level=requested_audit,
+                    content_mode=content_mode,
+                    force=args.force,
+                    transcriber_mode=args.transcriber,
+                    media=media,
+                    plan_selector=lambda preview: choose_execution_plan(
+                        settings,
+                        preview=preview,
+                        audit_level=requested_audit,
+                        preset=args.profile,
+                        route_overrides=route_overrides,
+                        assume_yes=args.yes,
+                        interactive=sys.stdin.isatty(),
+                        input_fn=_stderr_input,
+                        output_fn=lambda message: print(message, file=sys.stderr),
+                    ),
+                    progress=lambda message: print(message, file=sys.stderr),
+                )
+                _print_result(result, args.as_json)
+                return 0
+            _print_result(result, args.as_json)
+            return 0
         _print_result(_preview(spec, args, settings), args.as_json)
         return 0
-    except (BilibiliError, TextBackendError, InputError, OSError, ValueError) as exc:
+    except (
+        AliyunAsrError,
+        BilibiliError,
+        MediaError,
+        TextBackendError,
+        InputError,
+        LocalAsrError,
+        OSError,
+        ValueError,
+    ) as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 2

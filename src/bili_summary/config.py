@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import configparser
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -8,17 +9,20 @@ from .models import TextProfile
 
 
 VALID_AUDIT_LEVELS = {"off", "basic", "deep"}
+VALID_CONTENT_MODES = {"lecture", "practice"}
 VALID_TRANSCRIBER_MODES = {"auto", "local", "online"}
 TEXT_TASKS = ("organize", "summary", "basic_audit", "deep_audit")
 VALID_TEXT_DRIVERS = {"codex_exec", "deepseek_http"}
 VALID_CODEX_REASONING = {"default", "low", "medium", "high", "xhigh", "max"}
 VALID_DEEPSEEK_REASONING = {"off", "low", "high", "max"}
+ALIYUN_WORKSPACE_ID_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
 
 
 @dataclass(frozen=True)
 class Settings:
     data_root: Path = Path("/home/dev/bili-summary-data")
     audit_level: str = "basic"
+    content_mode: str = "lecture"
     transcriber_mode: str = "auto"
     cost_submission_limit_cny: float = 1.0
     bilibili_cookie_file: Path | None = None
@@ -61,6 +65,12 @@ class Settings:
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_api_key_env: str = "DEEPSEEK_API_KEY"
     deepseek_api_key_file: Path | None = None
+    aliyun_asr_workspace_id: str | None = None
+    aliyun_asr_api_key_env: str = "DASHSCOPE_API_KEY"
+    aliyun_asr_api_key_file: Path | None = None
+    local_asr_binary: Path | None = None
+    local_asr_model: Path | None = None
+    local_asr_threads: int = 8
 
 
 def load_settings(path: Path | None = None) -> Settings:
@@ -70,6 +80,12 @@ def load_settings(path: Path | None = None) -> Settings:
     cookie_value = parser.get("bilibili", "cookie_file", fallback="").strip()
     codex_model = parser.get("codex", "model", fallback="").strip()
     deepseek_key_file = parser.get("deepseek", "api_key_file", fallback="").strip()
+    aliyun_key_file = parser.get("aliyun_asr", "api_key_file", fallback="").strip()
+    aliyun_workspace_id = parser.get(
+        "aliyun_asr", "workspace_id", fallback=""
+    ).strip()
+    local_asr_binary = parser.get("local_asr", "binary", fallback="").strip()
+    local_asr_model = parser.get("local_asr", "model", fallback="").strip()
     profiles = _load_text_profiles(parser, codex_model or None)
     routes = {
         task: parser.get("text_routes", task, fallback="codex_default").strip()
@@ -79,6 +95,9 @@ def load_settings(path: Path | None = None) -> Settings:
     settings = Settings(
         data_root=Path(parser.get("storage", "data_root", fallback=str(Settings.data_root))).expanduser(),
         audit_level=parser.get("processing", "audit_level", fallback="basic").strip().lower(),
+        content_mode=parser.get(
+            "processing", "content_mode", fallback="lecture"
+        ).strip().lower(),
         transcriber_mode=parser.get("processing", "transcriber_mode", fallback="auto").strip().lower(),
         cost_submission_limit_cny=parser.getfloat(
             "processing", "cost_submission_limit_cny", fallback=1.0
@@ -109,9 +128,21 @@ def load_settings(path: Path | None = None) -> Settings:
         deepseek_api_key_file=(
             Path(deepseek_key_file).expanduser() if deepseek_key_file else None
         ),
+        aliyun_asr_workspace_id=aliyun_workspace_id or None,
+        aliyun_asr_api_key_env=parser.get(
+            "aliyun_asr", "api_key_env", fallback="DASHSCOPE_API_KEY"
+        ).strip(),
+        aliyun_asr_api_key_file=(
+            Path(aliyun_key_file).expanduser() if aliyun_key_file else None
+        ),
+        local_asr_binary=(Path(local_asr_binary).expanduser() if local_asr_binary else None),
+        local_asr_model=(Path(local_asr_model).expanduser() if local_asr_model else None),
+        local_asr_threads=parser.getint("local_asr", "threads", fallback=8),
     )
     if settings.audit_level not in VALID_AUDIT_LEVELS:
         raise ValueError(f"无效的 audit_level：{settings.audit_level}")
+    if settings.content_mode not in VALID_CONTENT_MODES:
+        raise ValueError(f"无效的 content_mode：{settings.content_mode}")
     if settings.transcriber_mode not in VALID_TRANSCRIBER_MODES:
         raise ValueError(f"无效的 transcriber_mode：{settings.transcriber_mode}")
     if settings.cost_submission_limit_cny < 0:
@@ -124,6 +155,14 @@ def load_settings(path: Path | None = None) -> Settings:
         raise ValueError("deep_chunk_target_minutes 必须大于 0")
     if settings.deep_chunk_max_minutes < settings.deep_chunk_target_minutes:
         raise ValueError("deep_chunk_max_minutes 不能小于 deep_chunk_target_minutes")
+    if not settings.aliyun_asr_api_key_env:
+        raise ValueError("阿里云 ASR api_key_env 不能为空")
+    if settings.aliyun_asr_workspace_id and not ALIYUN_WORKSPACE_ID_PATTERN.fullmatch(
+        settings.aliyun_asr_workspace_id
+    ):
+        raise ValueError("阿里云 ASR workspace_id 只能包含字母、数字和连字符")
+    if settings.local_asr_threads <= 0 or settings.local_asr_threads > 64:
+        raise ValueError("本地 ASR threads 必须在 1 到 64 之间")
     _validate_text_settings(settings)
     return settings
 
